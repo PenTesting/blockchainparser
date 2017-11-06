@@ -10,8 +10,6 @@ import (
 	"log"
 	"os"
 	"strconv"
-	_ "github.com/davecgh/go-spew/spew"
-	_ "github.com/piotrnar/gocoin/lib/btc"
 	"github.com/forchain/blockchainparser/utils"
 	"sync"
 	"io/ioutil"
