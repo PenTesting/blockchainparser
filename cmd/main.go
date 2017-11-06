@@ -5,19 +5,27 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/ruqqq/blockchainparser"
-	"github.com/ruqqq/blockchainparser/db"
+	"github.com/forchain/blockchainparser"
+	"github.com/forchain/blockchainparser/db"
 	"log"
 	"os"
 	"strconv"
+	_ "github.com/davecgh/go-spew/spew"
+	_ "github.com/piotrnar/gocoin/lib/btc"
+	"github.com/forchain/blockchainparser/utils"
+	"sync"
+	"io/ioutil"
+	"regexp"
 )
 
 func main() {
 	var help bool
 	var testnet bool
 	var datadir string
+	var outDir string
 	flag.BoolVar(&testnet, "testnet", testnet, "Use testnet")
 	flag.StringVar(&datadir, "datadir", blockchainparser.BitcoinDir(), "Bitcoin data path")
+	flag.StringVar(&outDir, "out", "/tmp", "Out path")
 	flag.BoolVar(&help, "help", help, "Show help")
 	flag.Parse()
 
@@ -34,6 +42,7 @@ func main() {
 	showHelp := func() {
 		fmt.Fprint(os.Stderr, "blockchainparser\n(c)2017 Faruq Rasid\n\n"+
 			"Commands:\n"+
+			"  ExportRDF \n"+
 			"  GetBlock <hash>\n"+
 			"  GetBlockIndexRecord <hash>\n"+
 			"  GetBlockFromFile <fileNum> <blockStartPos>\n"+
@@ -61,7 +70,30 @@ func main() {
 	}
 	defer indexDb.Close()
 
-	if len(args) == 2 && args[0] == "GetBlock" {
+	if len(args) == 1 && args[0] == "ExportRDF" {
+
+		log.Print("start")
+
+		wg := new(sync.WaitGroup)
+
+		if files, err := ioutil.ReadDir(datadir + "/blocks/"); err == nil {
+			for _, f := range files {
+				r, err := regexp.Compile("blk(\\d+)\\.dat") // Do we have an 'N' or 'n' at the beginning?
+				if err != nil {
+					log.Println(err)
+					break
+				}
+				if matches := r.FindStringSubmatch(f.Name()); len(matches) == 2 {
+					if fileNum, err := strconv.Atoi(matches[1]); err == nil {
+						wg.Add(1)
+						go utils.GenerateRDF(wg, uint32(fileNum), magicId, datadir, outDir)
+					}
+				}
+			}
+		}
+
+		wg.Wait()
+	} else if len(args) == 2 && args[0] == "GetBlock" {
 		failIfReindexing(indexDb)
 		result, err := db.GetBlockIndexRecordByBigEndianHex(indexDb, args[1])
 		if err != nil {
