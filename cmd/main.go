@@ -14,6 +14,7 @@ import (
 	"sync"
 	"io/ioutil"
 	"regexp"
+	"runtime"
 )
 
 func main() {
@@ -74,6 +75,8 @@ func main() {
 
 		wg := new(sync.WaitGroup)
 
+		i := 0
+		cpuNum := runtime.NumCPU()
 		if files, err := ioutil.ReadDir(datadir + "/blocks/"); err == nil {
 			for _, f := range files {
 				r, err := regexp.Compile("blk(\\d+)\\.dat") // Do we have an 'N' or 'n' at the beginning?
@@ -85,11 +88,13 @@ func main() {
 					if fileNum, err := strconv.Atoi(matches[1]); err == nil {
 						wg.Add(1)
 						go utils.GenerateRDF(wg, uint32(fileNum), magicId, datadir, outDir)
+						if i++; i%cpuNum == 0 {
+							wg.Wait()
+						}
 					}
 				}
 			}
 		}
-
 		wg.Wait()
 	} else if len(args) == 2 && args[0] == "GetBlock" {
 		failIfReindexing(indexDb)
