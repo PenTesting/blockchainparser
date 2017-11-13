@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"log"
 )
 
 type Hash256 []byte
@@ -31,7 +32,7 @@ type BlockHeader struct {
 }
 
 type Block struct {
-	BlockHeader      // actual pos below Length field
+	BlockHeader // actual pos below Length field
 	MagicId          MagicId
 	Length           uint32
 	TransactionCount uint64 // txn_count
@@ -90,6 +91,7 @@ func ParseBlockTransactionsFromFile(blockFile *BlockFile, block *Block) error {
 	for t := uint64(0); t < block.TransactionCount; t++ {
 		tx, err := ParseBlockTransactionFromFile(blockFile)
 		if err != nil {
+			log.Println("last block", block.HashPrev.String())
 			return err
 		}
 		block.Transactions = append(block.Transactions, *tx)
@@ -128,6 +130,10 @@ func ParseBlockTransactionFromFile(blockFile *BlockFile) (*Transaction, error) {
 		input.Hash = blockFile.ReadBytes(32)
 		input.Index = blockFile.ReadUint32() // TODO: Not sure if correctly read
 		scriptLength := blockFile.ReadVarint()
+		if scriptLength > 100000000 {
+			err := fmt.Sprintf("invalid input:%v scriptLength:%v", input.Hash.String(), scriptLength)
+			return nil, errors.New(err)
+		}
 		input.Script = blockFile.ReadBytes(scriptLength)
 		input.Sequence = blockFile.ReadUint32()
 		tx.Vin = append(tx.Vin, input)

@@ -59,16 +59,19 @@ func GenerateRDF(wg *sync.WaitGroup, fileNum uint32, magicId blockchainparser.Ma
 
 		blockHash := bh.Hash()
 
-		w.Write([]byte(fmt.Sprintf("<%v> <prev> <%v> .\n", blockHash, bh.HashPrev)))
+		//w.Write([]byte(fmt.Sprintf("<%v> <prev> <%v> .\n", blockHash, bh.HashPrev)))
+		w.Write([]byte(fmt.Sprintf("<%v> <p> <%v> .\n", blockHash, bh.HashPrev)))
 		//w.Write([]byte(fmt.Sprintf("<%v> <merkle> \"%v\" .\n", blockHash, bh.HashMerkle)))
 		//w.Write([]byte(fmt.Sprintf("<%v> <difficulty> \"%v\"^^<xs:int> .\n", blockHash, bh.TargetDifficulty)))
 		dt := bh.Timestamp.Format(time.RFC3339)
-		w.Write([]byte(fmt.Sprintf("<%v> <timestamp> \"%v\"^^<xs:dateTime> .\n", blockHash, dt)))
+		//w.Write([]byte(fmt.Sprintf("<%v> <timestamp> \"%v\"^^<xs:dateTime> .\n", blockHash, dt)))
+		w.Write([]byte(fmt.Sprintf("<%v> <ts> \"%v\"^^<xs:dateTime> .\n", blockHash, dt)))
 		//w.Write([]byte(fmt.Sprintf("<%v> <nonce> \"%v\"^^<xs:int> .\n", blockHash, bh.Nonce)))
 
 		for _, t := range block.Transactions {
 			txID := t.Txid()
-			w.Write([]byte(fmt.Sprintf("<%v> <transactions> <%v> .\n", blockHash, txID)))
+			//w.Write([]byte(fmt.Sprintf("<%v> <transactions> <%v> .\n", blockHash, txID)))
+			w.Write([]byte(fmt.Sprintf("<%v> <tx> <%v> .\n", blockHash, txID)))
 			for _, i := range t.Vin {
 				outputID := ""
 				if i.Index == 4294967295 {
@@ -78,7 +81,8 @@ func GenerateRDF(wg *sync.WaitGroup, fileNum uint32, magicId blockchainparser.Ma
 					delete(utxoMap, outputID)
 				}
 
-				w.Write([]byte(fmt.Sprintf("<%v> <vin> <%v> .\n", txID, outputID)))
+				//w.Write([]byte(fmt.Sprintf("<%v> <vin> <%v> .\n", txID, outputID)))
+				w.Write([]byte(fmt.Sprintf("<%v> <i> <%v> .\n", txID, outputID)))
 			}
 			for k, o := range t.Vout {
 				outputID := fmt.Sprintf("%v.%v", txID, k)
@@ -89,11 +93,15 @@ func GenerateRDF(wg *sync.WaitGroup, fileNum uint32, magicId blockchainparser.Ma
 					balance := balanceMap[addr.String()] + o.Value
 					balanceMap[addr.String()] = balance
 
-					w.Write([]byte(fmt.Sprintf("<%v> <address> <%v> (balance=%v, time=%v) .\n",
-						outputID, addr.String(), balance, dt)))
-					w.Write([]byte(fmt.Sprintf("<%v> <value> \"%v\"^^<xs:int> .\n ", outputID, o.Value)))
+					//w.Write([]byte(fmt.Sprintf("<%v> <address> <%v> (balance=%v, time=%v) .\n",
+					//	outputID, addr.String(), balance, dt)))
+					//w.Write([]byte(fmt.Sprintf("<%v> <address> <%v>  .\n", outputID, addr.String())))
+					w.Write([]byte(fmt.Sprintf("<%v> <a> <%v>  .\n", outputID, addr.String())))
+					//w.Write([]byte(fmt.Sprintf("<%v> <value> \"%v\"^^<xs:int> .\n ", outputID, o.Value)))
+					w.Write([]byte(fmt.Sprintf("<%v> <v> \"%v\"^^<xs:int> .\n ", outputID, o.Value)))
 
-					w.Write([]byte(fmt.Sprintf("<%v> <vout> <%v> .\n", txID, outputID)))
+					//w.Write([]byte(fmt.Sprintf("<%v> <vout> <%v> .\n", txID, outputID)))
+					w.Write([]byte(fmt.Sprintf("<%v> <o> <%v> .\n", txID, outputID)))
 				} else {
 					//log.Printf("cannot resolve address from script:%v", o.Script)
 				}
