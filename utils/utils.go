@@ -22,12 +22,15 @@ func ProcessTx(txCh chan *blockchainparser.Transaction, resCh chan int) {
 	// address -> balance
 	balanceMap := make(map[string]int64)
 
+outer:
 	for t := range txCh {
 		txID := t.Txid().String()
-		for _, i := range t.Vin {
+		for k, i := range t.Vin {
 			if i.Index != 4294967295 {
-				if len(i.Hash) > 256 {
-					log.Fatalln("Invalid hash", len(i.Hash))
+				if len(i.Hash) > 256 || len(i.Hash) <= 0 {
+					//log.Fatalln("Invalid hash", len(i.Hash), txID)
+					log.Println("Invalid tx input", txID, k)
+					continue outer
 				}
 				hash := i.Hash.String()
 				unspent, ok := unspentMap[hash]
@@ -96,13 +99,47 @@ func ProcessTx(txCh chan *blockchainparser.Transaction, resCh chan int) {
 		}
 	}
 
-	i := 0
-	for k, v := range balanceMap {
-		log.Print(k, v)
-		if i++; i > 9 {
-			break
-		}
+	b := new(bytes.Buffer)
+	w, err := gzip.NewWriterLevel(b, gzip.BestSpeed)
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	for k, v := range balanceMap {
+		line := fmt.Sprintln(k, v)
+		w.Write([]byte(line))
+	}
+
+	w.Close()
+	fileName := fmt.Sprintf("/tmp/%v.gz", "balance")
+	if err := ioutil.WriteFile(fileName, b.Bytes(), 0666); err != nil {
+		log.Fatal(err)
+	}
+
+	b = new(bytes.Buffer)
+	w, err = gzip.NewWriterLevel(b, gzip.BestSpeed)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	bb := new(bytes.Buffer)
+	for tx, outputs := range unspentMap {
+		bb.WriteString(tx)
+		for i, o := range outputs {
+			l := fmt.Sprintf(",%v %v %v", i, o.string, o.int64)
+			bb.WriteString(l)
+		}
+		bb.WriteByte('\n')
+		w.Write([]byte(bb.Bytes()))
+		bb.Reset()
+	}
+
+	fileName = fmt.Sprintf("/tmp/%v.gz", "unspent")
+	if err := ioutil.WriteFile(fileName, b.Bytes(), 0666); err != nil {
+		log.Fatal(err)
+	}
+
+	w.Close()
 
 	resCh <- len(balanceMap)
 }
