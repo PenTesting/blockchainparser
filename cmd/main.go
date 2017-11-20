@@ -41,6 +41,7 @@ func main() {
 	showHelp := func() {
 		fmt.Fprint(os.Stderr, "blockchainparser\n(c)2017 Faruq Rasid\n\n"+
 			"Commands:\n"+
+			"  ExportBalance \n"+
 			"  ExportRDF \n"+
 			"  GetBlock <hash>\n"+
 			"  GetBlockIndexRecord <hash>\n"+
@@ -69,7 +70,40 @@ func main() {
 	}
 	defer indexDb.Close()
 
-	if len(args) == 1 && args[0] == "ExportRDF" {
+	if len(args) == 1 && args[0] == "ExportBalance" {
+
+		wg := new(sync.WaitGroup)
+
+		txCh := make(chan *blockchainparser.Transaction)
+		resCh := make(chan int)
+
+		go utils.ProcessTx(txCh, resCh)
+
+		i := 0
+		cpuNum := runtime.NumCPU()
+		if files, err := ioutil.ReadDir(datadir + "/blocks/"); err == nil {
+			log.Print("Start ExportBalance: files ", len(files)/2, ",CPU ", cpuNum)
+			for _, f := range files {
+				r, err := regexp.Compile("blk(\\d+)\\.dat") // Do we have an 'N' or 'n' at the beginning?
+				if err != nil {
+					log.Println(err)
+					break
+				}
+				if matches := r.FindStringSubmatch(f.Name()); len(matches) == 2 {
+					if fileNum, err := strconv.Atoi(matches[1]); err == nil {
+						wg.Add(1)
+						go utils.ExportUnspent(wg, txCh, uint32(fileNum), magicId, datadir, outDir)
+						if i++; i%cpuNum == 0 {
+							wg.Wait()
+						}
+					}
+				}
+			}
+		}
+		wg.Wait()
+		close(txCh)
+		log.Print("balance number:", <-resCh)
+	} else if len(args) == 1 && args[0] == "ExportRDF" {
 
 		log.Print("start")
 
@@ -215,7 +249,8 @@ func main() {
 	}
 }
 
-func failIfReindexing(indexDb *db.IndexDb) {
+func
+failIfReindexing(indexDb *db.IndexDb) {
 	result, err := db.GetReindexing(indexDb)
 	if err != nil {
 		log.Fatal(err)
