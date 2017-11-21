@@ -189,9 +189,6 @@ func ExportUnspent(wg *sync.WaitGroup, txCh chan *blockchainparser.Transaction, 
 func GenerateRDF(wg *sync.WaitGroup, fileNum uint32, magicId blockchainparser.MagicId, datadir string, outDir string) {
 	defer wg.Done()
 
-	utxoMap := make(map[string]string)
-	balanceMap := make(map[string]int64)
-
 	offset := uint32(8)
 	startPos := uint32(0)
 
@@ -232,56 +229,24 @@ func GenerateRDF(wg *sync.WaitGroup, fileNum uint32, magicId blockchainparser.Ma
 
 		blockHash := bh.Hash()
 
-		//w.Write([]byte(fmt.Sprintf("<%v> <prev> <%v> .\n", blockHash, bh.HashPrev)))
 		w.Write([]byte(fmt.Sprintf("<%v> <p> <%v> .\n", blockHash, bh.HashPrev)))
-		//w.Write([]byte(fmt.Sprintf("<%v> <merkle> \"%v\" .\n", blockHash, bh.HashMerkle)))
-		//w.Write([]byte(fmt.Sprintf("<%v> <difficulty> \"%v\"^^<xs:int> .\n", blockHash, bh.TargetDifficulty)))
 		dt := bh.Timestamp.Format(time.RFC3339)
-		//w.Write([]byte(fmt.Sprintf("<%v> <timestamp> \"%v\"^^<xs:dateTime> .\n", blockHash, dt)))
 		w.Write([]byte(fmt.Sprintf("<%v> <ts> \"%v\"^^<xs:dateTime> .\n", blockHash, dt)))
-		//w.Write([]byte(fmt.Sprintf("<%v> <nonce> \"%v\"^^<xs:int> .\n", blockHash, bh.Nonce)))
 
 		for _, t := range block.Transactions {
 			txID := t.Txid()
-			//w.Write([]byte(fmt.Sprintf("<%v> <transactions> <%v> .\n", blockHash, txID)))
 			w.Write([]byte(fmt.Sprintf("<%v> <tx> <%v> .\n", blockHash, txID)))
 			for _, i := range t.Vin {
-				outputID := ""
-				if i.Index == 4294967295 {
-					outputID = fmt.Sprintf("%v.%v", blockHash, 0)
-				} else {
-					outputID = fmt.Sprintf("%v.%v", i.Hash, i.Index)
-					delete(utxoMap, outputID)
-				}
-
-				//w.Write([]byte(fmt.Sprintf("<%v> <vin> <%v> .\n", txID, outputID)))
-				w.Write([]byte(fmt.Sprintf("<%v> <i> <%v> .\n", txID, outputID)))
+				w.Write([]byte(fmt.Sprintf("<%v> <i> <%v> (n=%v) .\n", txID, i.Hash, int32(i.Index))))
 			}
-			for k, o := range t.Vout {
-				outputID := fmt.Sprintf("%v.%v", txID, k)
-
-				addr := btc.NewAddrFromPkScript(o.Script, false)
-				if addr != nil {
-
-					balance := balanceMap[addr.String()] + o.Value
-					balanceMap[addr.String()] = balance
-
-					//w.Write([]byte(fmt.Sprintf("<%v> <address> <%v> (balance=%v, time=%v) .\n",
-					//	outputID, addr.String(), balance, dt)))
-					//w.Write([]byte(fmt.Sprintf("<%v> <address> <%v>  .\n", outputID, addr.String())))
-					w.Write([]byte(fmt.Sprintf("<%v> <a> <%v>  .\n", outputID, addr.String())))
-					//w.Write([]byte(fmt.Sprintf("<%v> <value> \"%v\"^^<xs:int> .\n ", outputID, o.Value)))
-					w.Write([]byte(fmt.Sprintf("<%v> <v> \"%v\"^^<xs:int> .\n ", outputID, o.Value)))
-
-					//w.Write([]byte(fmt.Sprintf("<%v> <vout> <%v> .\n", txID, outputID)))
-					w.Write([]byte(fmt.Sprintf("<%v> <o> <%v> .\n", txID, outputID)))
-				} else {
-					//log.Printf("cannot resolve address from script:%v", o.Script)
+			for n, o := range t.Vout {
+				if addr := btc.NewAddrFromPkScript(o.Script, false); addr != nil {
+					w.Write([]byte(fmt.Sprintf("<%v> <o> <%v> (v=%v, n=%v) .\n",
+						txID, addr.String(), float64(o.Value)/1e8, n)))
 				}
 			}
 		}
 
-		//log.Print(block.Hash())
 		startPos += block.Length + offset
 	}
 	w.Close()
