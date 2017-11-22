@@ -11,10 +11,6 @@ import (
 	"os"
 	"strconv"
 	"github.com/forchain/blockchainparser/utils"
-	"sync"
-	"io/ioutil"
-	"regexp"
-	"runtime"
 )
 
 func main() {
@@ -70,66 +66,19 @@ func main() {
 	}
 	defer indexDb.Close()
 
-	if len(args) == 1 && args[0] == "ExportBalance" {
-
-		wg := new(sync.WaitGroup)
-
-		txCh := make(chan *blockchainparser.Transaction)
-		resCh := make(chan int)
-
-		go utils.ProcessTx(txCh, resCh)
-
-		i := 0
-		cpuNum := runtime.NumCPU()
-		if files, err := ioutil.ReadDir(datadir + "/blocks/"); err == nil {
-			log.Print("Start ExportBalance: files ", len(files)/2, ",CPU ", cpuNum)
-			for _, f := range files {
-				r, err := regexp.Compile("blk(\\d+)\\.dat") // Do we have an 'N' or 'n' at the beginning?
-				if err != nil {
-					log.Println(err)
-					break
-				}
-				if matches := r.FindStringSubmatch(f.Name()); len(matches) == 2 {
-					if fileNum, err := strconv.Atoi(matches[1]); err == nil {
-						wg.Add(1)
-						go utils.ExportUnspent(wg, txCh, uint32(fileNum), magicId, datadir, outDir)
-						if i++; i%cpuNum == 0 {
-							wg.Wait()
-						}
-					}
+	if len(args) >= 2 && args[0] == "ExportBalance" {
+		if blockNumber, err := strconv.Atoi(args[1]); err == nil {
+			snapshot := uint32(100)
+			if len(args) == 3 {
+				if s, err :=strconv.Atoi(args[2]); err == nil {
+					snapshot = uint32(s)
 				}
 			}
+			e := new(utils.BalanceExporter)
+			e.Export(uint32(blockNumber), snapshot, datadir, magicId, outDir)
 		}
-		wg.Wait()
-		close(txCh)
-		log.Print("balance number:", <-resCh)
 	} else if len(args) == 1 && args[0] == "ExportRDF" {
-
-		log.Print("start")
-
-		wg := new(sync.WaitGroup)
-
-		i := 0
-		cpuNum := runtime.NumCPU()
-		if files, err := ioutil.ReadDir(datadir + "/blocks/"); err == nil {
-			for _, f := range files {
-				r, err := regexp.Compile("blk(\\d+)\\.dat") // Do we have an 'N' or 'n' at the beginning?
-				if err != nil {
-					log.Println(err)
-					break
-				}
-				if matches := r.FindStringSubmatch(f.Name()); len(matches) == 2 {
-					if fileNum, err := strconv.Atoi(matches[1]); err == nil {
-						wg.Add(1)
-						go utils.GenerateRDF(wg, uint32(fileNum), magicId, datadir, outDir)
-						if i++; i%cpuNum == 0 {
-							wg.Wait()
-						}
-					}
-				}
-			}
-		}
-		wg.Wait()
+		utils.ExportRDF(datadir, magicId, outDir)
 	} else if len(args) == 2 && args[0] == "GetBlock" {
 		failIfReindexing(indexDb)
 		result, err := db.GetBlockIndexRecordByBigEndianHex(indexDb, args[1])
