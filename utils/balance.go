@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"bufio"
 	"strings"
-	"sync/atomic"
 	"sort"
 )
 
@@ -147,7 +146,6 @@ func (_b *BalanceExporter) loadMap() {
 	// address -> balance
 	_b.balanceMap_ = make(tBalanceMap)
 
-	_b.fileNO_ = -1
 	if files, err := ioutil.ReadDir(_b.outDir_); err == nil && len(files) > 0 {
 		start := 0
 		var fi os.FileInfo
@@ -202,6 +200,7 @@ func (_b *BalanceExporter) Export(_blockNO uint32, _snapshot uint32, _dataDir st
 	_b.file2blocksCh_ = make(chan *tFile2Blocks, cpuNum)
 	_b.fileList_ = make([]int, 0)
 	_b.file2blocksMap_ = make(map[uint32][]*blockchainparser.Block)
+	_b.fileNO_ = -1
 
 	if files, err := ioutil.ReadDir(_dataDir + "/blocks/"); err == nil {
 		for _, f := range files {
@@ -419,7 +418,7 @@ func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
 					}
 
 					for i, o := range t.Vout {
-						if a := btc.NewAddrFromPkScript(o.Script, false); a != nil {
+						if a := btc.NewAddrFromPkScript(o.Script, false); a != nil && o.Value > 0 {
 							index := uint32(i)
 							addr := a.String()
 							balance := _b.balanceMap_[addr] + o.Value
