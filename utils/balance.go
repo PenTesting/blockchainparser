@@ -32,9 +32,13 @@ type tUnspentMap map[string]tOutputMap
 // add -> balance
 type tBalanceMap map[string]int64
 
-type tFile2Blocks struct {
-	file   uint32
-	blocks []*blockchainparser.Block
+type tFile2Spent struct {
+	file     uint32
+	blockNum uint32
+
+	unspentMap tUnspentMap
+	balanceMap tBalanceMap
+	spentList  []string
 }
 
 type BalanceExporter struct {
@@ -49,11 +53,11 @@ type BalanceExporter struct {
 
 	snapshot_ uint32
 
-	file2blocksMap_ map[uint32][]*blockchainparser.Block
-
-	file2blocksCh_ chan *tFile2Blocks
+	file2spentMap_ map[uint32]tFile2Spent
+	file2spentCh_  chan tFile2Spent
 
 	fileList_ []int
+	blockNum_ uint32
 }
 
 func (_b *BalanceExporter) loadUnspent(_path string, _wg *sync.WaitGroup) {
@@ -197,10 +201,13 @@ func (_b *BalanceExporter) Export(_blockNO uint32, _snapshot uint32, _dataDir st
 	_b.magicId_ = _magicId
 	_b.outDir_ = _outDir
 	_b.snapshot_ = _snapshot
-	_b.file2blocksCh_ = make(chan *tFile2Blocks, cpuNum)
 	_b.fileList_ = make([]int, 0)
-	_b.file2blocksMap_ = make(map[uint32][]*blockchainparser.Block)
 	_b.fileNO_ = -1
+
+	_b.file2spentMap_ = make(map[uint32]tFile2Spent)
+	_b.file2spentCh_ = make(chan tFile2Spent)
+
+	_b.blockNum_ = uint32(0)
 
 	if files, err := ioutil.ReadDir(_dataDir + "/blocks/"); err == nil {
 		for _, f := range files {
@@ -328,11 +335,11 @@ func (_b *BalanceExporter) saveBalance(_wg *sync.WaitGroup, _path string) {
 	log.Println("saved", fileName)
 }
 
-func (_b *BalanceExporter) saveMap(_files uint32, _blockNum uint32) {
+func (_b *BalanceExporter) saveMap(_files uint32) {
 	wg := new(sync.WaitGroup)
 	wg.Add(2)
 
-	path := fmt.Sprintf("%v/%v.%v", _b.outDir_, _files, _blockNum)
+	path := fmt.Sprintf("%v/%v.%v", _b.outDir_, _files, _b.blockNum_)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		os.Mkdir(path, 0755)
 	}
@@ -369,20 +376,69 @@ func (_b *BalanceExporter) loadFile(wg *sync.WaitGroup, _fileNO uint32) {
 		log.Fatal(err)
 	}
 
-	blocks := make([]*blockchainparser.Block, 0)
+	blockNum := uint32(0)
+	unspentMap := make(tUnspentMap)
+	balanceMap := make(tBalanceMap)
+	spentList := make([]string, 0)
+
 	for startPos < size {
 		block, err := blockchainparser.ParseBlockFromFile(blockFile, _b.magicId_)
 		if err != nil {
 			log.Println(err)
 			break
 		}
-		blocks = append(blocks, block)
+
+		for _, t := range block.Transactions {
+			txID := t.Txid().String()
+			for _, i := range t.Vin {
+				if int32(i.Index) >= 0 {
+					hash := i.Hash.String()
+					if unspent, ok := unspentMap[hash]; ok {
+						if o, ok := unspent[i.Index]; ok {
+							delete(unspent, i.Index)
+							if len(unspent) == 0 {
+								delete(unspentMap, hash)
+							}
+
+							balance := balanceMap[o.addr]
+							balance -= o.val
+							if balance <= 0 {
+								delete(balanceMap, o.addr)
+							} else {
+								balanceMap[o.addr] = balance
+							}
+						} else {
+							spentList = append(spentList, fmt.Sprint(hash, i.Index))
+						}
+					} else {
+						spentList = append(spentList, fmt.Sprint(hash, i.Index))
+					}
+				}
+			}
+
+			for i, o := range t.Vout {
+				if a := btc.NewAddrFromPkScript(o.Script, false); a != nil && o.Value > 0 {
+					index := uint32(i)
+					addr := a.String()
+					balance := balanceMap[addr] + o.Value
+					balanceMap[addr] = balance
+					unspent, ok := unspentMap[txID]
+					if !ok {
+						unspent = make(tOutputMap)
+					}
+					unspent[index] = tOutput{addr, o.Value}
+					unspentMap[txID] = unspent
+				}
+			}
+		}
+
 		startPos += block.Length + offset
+		blockNum++
 	}
 
-	log.Println("loaded file", _fileNO, len(_b.file2blocksMap_), len(blocks))
+	log.Println("loaded file", _fileNO, blockNum, len(unspentMap), len(balanceMap), len(spentList))
 
-	_b.file2blocksCh_ <- &tFile2Blocks{_fileNO, blocks}
+	_b.file2spentCh_ <- tFile2Spent{_fileNO, blockNum, unspentMap, balanceMap, spentList}
 }
 
 func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
@@ -391,62 +447,54 @@ func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
 	n := 0
 	for n < len(_b.fileList_) {
 		fileNO := uint32(_b.fileList_[n])
-		if blocks, ok := _b.file2blocksMap_[fileNO]; ok {
-			for _, b := range blocks {
-				for _, t := range b.Transactions {
-					txID := t.Txid().String()
-					for _, i := range t.Vin {
-						if int32(i.Index) >= 0 {
-							hash := i.Hash.String()
-							if unspent, ok := _b.unspentMap_[hash]; ok {
-								if o, ok := unspent[i.Index]; ok {
-									delete(unspent, i.Index)
-									if len(unspent) == 0 {
-										delete(_b.unspentMap_, hash)
-									}
+		if spent, ok := _b.file2spentMap_[fileNO]; ok {
+			_b.blockNum_ += spent.blockNum
 
-									balance := _b.balanceMap_[o.addr]
-									balance -= o.val
-									if balance <= 0 {
+			if n == 0 {
+				_b.unspentMap_ = spent.unspentMap
+				_b.balanceMap_ = spent.balanceMap
+			} else {
+				for _, s := range spent.spentList {
+					txID := s[:64]
+					if index, err := strconv.Atoi(s[64:]); err == nil {
+						index := uint32(index)
+						if oMap, ok := _b.unspentMap_[txID]; ok {
+							if o, ok := oMap[index]; ok {
+								delete(oMap, index)
+								if len(oMap) == 0 {
+									delete(_b.unspentMap_, txID)
+								}
+								if v, ok := _b.balanceMap_[o.addr]; ok {
+									if v -= o.val; v == 0 {
 										delete(_b.balanceMap_, o.addr)
-									} else {
-										_b.balanceMap_[o.addr] = balance
 									}
 								}
 							}
 						}
 					}
+				}
 
-					for i, o := range t.Vout {
-						if a := btc.NewAddrFromPkScript(o.Script, false); a != nil && o.Value > 0 {
-							index := uint32(i)
-							addr := a.String()
-							balance := _b.balanceMap_[addr] + o.Value
-							_b.balanceMap_[addr] = balance
-							unspent, ok := _b.unspentMap_[txID]
-							if !ok {
-								unspent = make(tOutputMap)
-							}
-							unspent[index] = tOutput{addr, o.Value}
-							_b.unspentMap_[txID] = unspent
-						}
-					}
+				for txID, oMap := range spent.unspentMap {
+					_b.unspentMap_[txID] = oMap
+				}
+
+				for addr, val := range spent.balanceMap {
+					_b.balanceMap_[addr] += val
 				}
 			}
 
-			delete(_b.file2blocksMap_, fileNO)
+			delete(_b.file2spentMap_, fileNO)
 			n++
 
-			blockNum := uint32(len(blocks))
-			log.Println("processed file", fileNO, len(_b.file2blocksMap_), blockNum)
+			log.Println("processed file", fileNO, len(_b.file2spentMap_), _b.blockNum_, spent.blockNum)
 
 			if uint32(n)%_b.snapshot_ == 0 {
-				_b.saveMap(fileNO, blockNum)
+				_b.saveMap(fileNO)
 			}
 		} else {
-			f2b := <-_b.file2blocksCh_
-			_b.file2blocksMap_[f2b.file] = f2b.blocks
-			log.Println("received file", f2b.file, len(_b.file2blocksMap_), len(f2b.blocks))
+			f2s := <-_b.file2spentCh_
+			_b.file2spentMap_[f2s.file] = f2s
+			log.Println("received file", f2s.file, len(_b.file2spentMap_), len(f2s.unspentMap))
 		}
 	}
 
