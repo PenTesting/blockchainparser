@@ -18,19 +18,17 @@ import (
 	"sort"
 )
 
+// next: addr to [58]byte, tx to [32]byte
+
 type tOutput struct {
-	addr string // index
-	val  int64  // val
+	index uint16
+	addr  string // index
+	val   uint64 // val
 }
 
-//  (index -> output)
-type tOutputMap map[uint32]tOutput
+type tUnspentMap map[string][]tOutput
 
-// tx -> tOutputMap
-type tUnspentMap map[string]tOutputMap
-
-// add -> balance
-type tBalanceMap map[string]int64
+type tBalanceMap map[string]uint64
 
 type tFile2Spent struct {
 	file     uint32
@@ -38,7 +36,8 @@ type tFile2Spent struct {
 
 	unspentMap tUnspentMap
 	balanceMap tBalanceMap
-	spentList  []string
+
+	spentList []string
 }
 
 type BalanceExporter struct {
@@ -82,23 +81,18 @@ func (_b *BalanceExporter) loadUnspent(_path string, _wg *sync.WaitGroup) {
 		l := scanner.Text()
 		if tokens := strings.Split(l, ","); len(tokens) == 2 {
 			txID := tokens[0]
-			outputs := tokens[1:]
-
-			out := make(tOutputMap)
-			for _, output := range outputs {
+			outputs := make([]tOutput, 0)
+			for _, output := range tokens[1:] {
 				if tokens := strings.Split(output, " "); len(tokens) == 3 {
 					if index, err := strconv.Atoi(tokens[0]); err == nil {
 						addr := tokens[1]
 						if val, err := strconv.Atoi(tokens[2]); err == nil {
-							out[uint32(index)] = tOutput{
-								addr,
-								int64(val),
-							}
+							outputs = append(outputs, tOutput{uint16(index), addr, uint64(val)})
 						}
 					}
 				}
 			}
-			_b.unspentMap_[txID] = out
+			_b.unspentMap_[txID] = outputs
 		}
 	}
 
@@ -130,10 +124,10 @@ func (_b *BalanceExporter) loadBalance(_path string, _wg *sync.WaitGroup) {
 	for scanner.Scan() {
 		l := scanner.Text()
 
-		if tokens := strings.Split(l, " "); len(tokens) == 2 {
+		if tokens := strings.Split(l, ","); len(tokens) == 2 {
 			addr := tokens[0]
-			if balance, err := strconv.Atoi(tokens[1]); err == nil {
-				_b.balanceMap_[addr] = int64(balance)
+			if balance, err := strconv.ParseUint(tokens[1], 10, 0); err == nil {
+				_b.balanceMap_[addr] = balance
 			}
 		}
 	}
@@ -228,7 +222,7 @@ func (_b *BalanceExporter) Export(_blockNO uint32, _snapshot uint32, _dataDir st
 
 		sort.Ints(_b.fileList_)
 
-		_b.loadMap()
+		//_b.loadMap()
 
 		waitProcess := new(sync.WaitGroup)
 		waitProcess.Add(1)
@@ -264,8 +258,9 @@ func (_b *BalanceExporter) saveUnspent(_wg *sync.WaitGroup, _path string) {
 	}
 
 	bb := new(bytes.Buffer)
-	for tx, outputs := range _b.unspentMap_ {
-		bb.WriteString(tx)
+	for txID, outputs := range _b.unspentMap_ {
+		bb.WriteString(txID)
+
 		for i, o := range outputs {
 			l := fmt.Sprintf(",%v %v %v", i, o.addr, o.val)
 			bb.WriteString(l)
@@ -316,16 +311,9 @@ func (_b *BalanceExporter) saveBalance(_wg *sync.WaitGroup, _path string) {
 		log.Fatal(err)
 	}
 
-	// if OOM, try delete map item then append to list
-	sorted := make(tSortedBalance, 0)
-
-	for k, v := range _b.balanceMap_ {
-		line := fmt.Sprintln(k, v)
-		sorted = append(sorted, line)
-	}
-	sort.Sort(sorted)
-	for _, v := range sorted {
-		w.Write([]byte(v))
+	for a, v := range _b.balanceMap_ {
+		line := fmt.Sprintf("%v,%v\n", a, v)
+		w.Write([]byte(line))
 	}
 
 	w.Close()
@@ -392,43 +380,57 @@ func (_b *BalanceExporter) loadFile(wg *sync.WaitGroup, _fileNO uint32) {
 			txID := t.Txid().String()
 			for _, i := range t.Vin {
 				if int32(i.Index) >= 0 {
-					hash := i.Hash.String()
-					if unspent, ok := unspentMap[hash]; ok {
-						if o, ok := unspent[i.Index]; ok {
-							delete(unspent, i.Index)
-							if len(unspent) == 0 {
-								delete(unspentMap, hash)
+					inHash := i.Hash.String()
+					if outputs, ok := unspentMap[inHash]; ok {
+						found := false
+						last := len(outputs) - 1
+						for k, o := range outputs {
+							if uint32(o.index) == i.Index {
+								if len(outputs) == 1 {
+									delete(unspentMap, inHash)
+								} else {
+									if last != k {
+										outputs[k] = outputs[last]
+									}
+									outputs = outputs[:last]
+								}
+								balance := balanceMap[o.addr]
+								balance -= o.val
+								if balance <= 0 {
+									delete(balanceMap, o.addr)
+								} else {
+									balanceMap[o.addr] = balance
+								}
+								found = true
+								break
 							}
-
-							balance := balanceMap[o.addr]
-							balance -= o.val
-							if balance <= 0 {
-								delete(balanceMap, o.addr)
-							} else {
-								balanceMap[o.addr] = balance
-							}
-						} else {
-							spentList = append(spentList, fmt.Sprint(hash, i.Index))
+						}
+						if !found {
+							spentList = append(spentList, fmt.Sprint(inHash, i.Index))
 						}
 					} else {
-						spentList = append(spentList, fmt.Sprint(hash, i.Index))
+						spentList = append(spentList, fmt.Sprint(inHash, i.Index))
 					}
 				}
 			}
 
+			outputs := make([]tOutput, 0)
 			for i, o := range t.Vout {
 				if a := btc.NewAddrFromPkScript(o.Script, false); a != nil && o.Value > 0 {
-					index := uint32(i)
 					addr := a.String()
-					balance := balanceMap[addr] + o.Value
-					balanceMap[addr] = balance
-					unspent, ok := unspentMap[txID]
-					if !ok {
-						unspent = make(tOutputMap)
-					}
-					unspent[index] = tOutput{addr, o.Value}
-					unspentMap[txID] = unspent
+
+					val := uint64(o.Value)
+					balanceMap[addr] += val
+
+					outputs = append(outputs, tOutput{
+						uint16(i),
+						addr,
+						val,
+					})
 				}
+			}
+			if len(outputs) > 0 {
+				unspentMap[txID] = outputs
 			}
 		}
 
@@ -457,16 +459,25 @@ func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
 				for _, s := range spent.spentList {
 					txID := s[:64]
 					if index, err := strconv.Atoi(s[64:]); err == nil {
-						index := uint32(index)
-						if oMap, ok := _b.unspentMap_[txID]; ok {
-							if o, ok := oMap[index]; ok {
-								delete(oMap, index)
-								if len(oMap) == 0 {
-									delete(_b.unspentMap_, txID)
-								}
-								if v, ok := _b.balanceMap_[o.addr]; ok {
-									if v -= o.val; v == 0 {
+						index := uint16(index)
+						if outputs, ok := _b.unspentMap_[txID]; ok {
+							last := len(outputs) - 1
+							for k, o := range outputs {
+								if o.index == index {
+									if len(outputs) == 1 {
+										delete(_b.unspentMap_, txID)
+									} else {
+										if k != last {
+											outputs[k] = outputs[last]
+										}
+										outputs = outputs[:last]
+									}
+
+									balance := _b.balanceMap_[o.addr] - o.val
+									if balance <= 0 {
 										delete(_b.balanceMap_, o.addr)
+									} else {
+										_b.balanceMap_[o.addr] = balance
 									}
 								}
 							}
@@ -488,9 +499,9 @@ func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
 
 			log.Println("processed file", fileNO, len(_b.file2spentMap_), _b.blockNum_, spent.blockNum)
 
-			if uint32(n)%_b.snapshot_ == 0 {
-				_b.saveMap(fileNO)
-			}
+			//if uint32(n)%_b.snapshot_ == 0 {
+			//	_b.saveMap(fileNO)
+			//}
 		} else {
 			f2s := <-_b.file2spentCh_
 			_b.file2spentMap_[f2s.file] = f2s
