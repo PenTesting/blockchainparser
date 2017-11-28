@@ -479,6 +479,7 @@ func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
 									} else {
 										_b.balanceMap_[o.addr] = balance
 									}
+									break
 								}
 							}
 						}
