@@ -477,7 +477,8 @@ func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
 			} else {
 				for _, s := range spent.spentList {
 					txID := makeTxID(s[:64])
-					if index, err := strconv.Atoi(s[64:]); err == nil {
+
+					if index, err := strconv.Atoi(s[65:]); err == nil {
 						index := uint16(index)
 						if oMap, ok := _b.unspentMap_[txID]; ok {
 							if o, ok := oMap[index]; ok {
@@ -488,6 +489,8 @@ func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
 								if v, ok := _b.balanceMap_[o.addr]; ok {
 									if v -= o.val; v == 0 {
 										delete(_b.balanceMap_, o.addr)
+									} else {
+										_b.balanceMap_[o.addr] = v
 									}
 								}
 							}
