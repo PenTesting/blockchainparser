@@ -12,11 +12,11 @@ import (
 	"compress/gzip"
 	"regexp"
 	"strconv"
-	"runtime"
 	"bufio"
 	"strings"
 	"sort"
 	"encoding/hex"
+	"runtime"
 )
 
 type tTxID [32]byte
@@ -49,7 +49,11 @@ type tUnspentMap map[tTxID]tOutputMap
 // add -> balance
 type tBalanceMap map[tAddr]uint64
 
-type tFile2Spent struct {
+type tPrev2Spent struct {
+	final bool
+	prev  string
+	last  string
+
 	file     uint32
 	blockNum uint32
 
@@ -70,8 +74,8 @@ type BalanceExporter struct {
 
 	snapshot_ uint32
 
-	file2spentMap_ map[uint32]tFile2Spent
-	file2spentCh_  chan tFile2Spent
+	blocksCh_ chan []*blockchainparser.Block
+	prevMap_  map[string]*blockchainparser.Block
 
 	fileList_ []int
 	blockNum_ uint32
@@ -164,11 +168,6 @@ func (_b *BalanceExporter) loadBalance(_path string, _wg *sync.WaitGroup) {
 }
 
 func (_b *BalanceExporter) loadMap() {
-	// tx -> (index -> {address, value})
-	_b.unspentMap_ = make(tUnspentMap)
-	// address -> balance
-	_b.balanceMap_ = make(tBalanceMap)
-
 	if files, err := ioutil.ReadDir(_b.outDir_); err == nil && len(files) > 0 {
 		start := 0
 		var fi os.FileInfo
@@ -223,10 +222,14 @@ func (_b *BalanceExporter) Export(_blockNO uint32, _snapshot uint32, _dataDir st
 	_b.fileList_ = make([]int, 0)
 	_b.fileNO_ = -1
 
-	_b.file2spentMap_ = make(map[uint32]tFile2Spent)
-	_b.file2spentCh_ = make(chan tFile2Spent)
+	_b.prevMap_ = make(map[string]*blockchainparser.Block)
 
 	_b.blockNum_ = uint32(0)
+	_b.blocksCh_ = make(chan []*blockchainparser.Block)
+
+	_b.unspentMap_ = make(tUnspentMap)
+	// address -> balance
+	_b.balanceMap_ = make(tBalanceMap)
 
 	if files, err := ioutil.ReadDir(_dataDir + "/blocks/"); err == nil {
 		for _, f := range files {
@@ -395,10 +398,7 @@ func (_b *BalanceExporter) loadFile(wg *sync.WaitGroup, _fileNO uint32) {
 		log.Fatal(err)
 	}
 
-	blockNum := uint32(0)
-	unspentMap := make(tUnspentMap)
-	balanceMap := make(tBalanceMap)
-	spentList := make([]string, 0)
+	list := make([]*blockchainparser.Block, 0)
 
 	for startPos < size {
 		block, err := blockchainparser.ParseBlockFromFile(blockFile, _b.magicId_)
@@ -406,120 +406,83 @@ func (_b *BalanceExporter) loadFile(wg *sync.WaitGroup, _fileNO uint32) {
 			log.Println(err)
 			break
 		}
-
-		for _, t := range block.Transactions {
-			txID := makeTxID(t.Txid().String())
-			for _, i := range t.Vin {
-				if int32(i.Index) >= 0 {
-					hash := makeTxID(i.Hash.String())
-					index := uint16(i.Index)
-					if unspent, ok := unspentMap[hash]; ok {
-						if o, ok := unspent[index]; ok {
-							delete(unspent, index)
-							if len(unspent) == 0 {
-								delete(unspentMap, hash)
-							}
-
-							balance := balanceMap[o.addr]
-							balance -= o.val
-							if balance <= 0 {
-								delete(balanceMap, o.addr)
-							} else {
-								balanceMap[o.addr] = balance
-							}
-						} else {
-							spentList = append(spentList, fmt.Sprint(hash, index))
-						}
-					} else {
-						spentList = append(spentList, fmt.Sprint(hash, index))
-					}
-				}
-			}
-
-			for i, o := range t.Vout {
-				if a := btc.NewAddrFromPkScript(o.Script, false); a != nil && o.Value > 0 {
-					index := uint16(i)
-					addr := new(tAddr)
-					copy(addr[:], a.String())
-					balance := balanceMap[*addr] + uint64(o.Value)
-					balanceMap[*addr] = balance
-					unspent, ok := unspentMap[txID]
-					if !ok {
-						unspent = make(tOutputMap)
-					}
-					unspent[index] = tOutput{*addr, uint64(o.Value)}
-					unspentMap[txID] = unspent
-				}
-			}
-		}
-
+		list = append(list, block)
 		startPos += block.Length + offset
-		blockNum++
 	}
 
-	log.Println("loaded file", _fileNO, blockNum, len(unspentMap), len(balanceMap), len(spentList))
-
-	_b.file2spentCh_ <- tFile2Spent{_fileNO, blockNum, unspentMap, balanceMap, spentList}
+	_b.blocksCh_ <- list
+	log.Println("[SENT]", _fileNO, len(list))
 }
 
 func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
 	defer _wg.Done()
 
 	n := 0
-	for n < len(_b.fileList_) {
-		fileNO := uint32(_b.fileList_[n])
-		if spent, ok := _b.file2spentMap_[fileNO]; ok {
-			_b.blockNum_ += spent.blockNum
+	genesis := make(blockchainparser.Hash256, 32)
+	prev := genesis.String()
+	blockNum := 0
+	for {
+		unspentMap := _b.unspentMap_
+		balanceMap := _b.balanceMap_
+		if block, ok := _b.prevMap_[prev]; ok {
+			for _, t := range block.Transactions {
+				txID := makeTxID(t.Txid().String())
 
-			if n == 0 {
-				_b.unspentMap_ = spent.unspentMap
-				_b.balanceMap_ = spent.balanceMap
-			} else {
-				for _, s := range spent.spentList {
-					txID := makeTxID(s[:64])
+				for _, i := range t.Vin {
+					if int32(i.Index) >= 0 {
+						hash := makeTxID(i.Hash.String())
+						index := uint16(i.Index)
+						if unspent, ok := unspentMap[hash]; ok {
+							if o, ok := unspent[index]; ok {
+								delete(unspent, index)
+								if len(unspent) == 0 {
+									delete(unspentMap, hash)
+								}
 
-					if index, err := strconv.Atoi(s[65:]); err == nil {
-						index := uint16(index)
-						if oMap, ok := _b.unspentMap_[txID]; ok {
-							if o, ok := oMap[index]; ok {
-								delete(oMap, index)
-								if len(oMap) == 0 {
-									delete(_b.unspentMap_, txID)
+								balance := balanceMap[o.addr]
+								balance -= o.val
+								if balance <= 0 {
+									delete(balanceMap, o.addr)
+								} else {
+									balanceMap[o.addr] = balance
 								}
-								if v, ok := _b.balanceMap_[o.addr]; ok {
-									if v -= o.val; v == 0 {
-										delete(_b.balanceMap_, o.addr)
-									} else {
-										_b.balanceMap_[o.addr] = v
-									}
-								}
+							} else {
+								log.Fatalln("txID", txID, "hash", hash.String(), "index", index, "blockNum", blockNum)
 							}
+						} else {
+							log.Fatalln("txID", txID, "hash", hash.String(), "blockNum", blockNum)
 						}
 					}
 				}
 
-				for txID, oMap := range spent.unspentMap {
-					_b.unspentMap_[txID] = oMap
+				unspent := make(tOutputMap)
+				for i, o := range t.Vout {
+					if a := btc.NewAddrFromPkScript(o.Script, false); a != nil && o.Value > 0 {
+						index := uint16(i)
+						addr := new(tAddr)
+						copy(addr[:], a.String())
+						val := uint64(o.Value)
+						balanceMap[*addr] = balanceMap[*addr] + val
+						unspent[index] = tOutput{*addr, val}
+					}
 				}
+				unspentMap[txID] = unspent
+			}
+			delete(_b.prevMap_, prev)
 
-				for addr, val := range spent.balanceMap {
-					_b.balanceMap_[addr] += val
-				}
+			prev = block.Hash().String()
+			if n == len(_b.fileList_) {
+				break
+			}
+			blockNum++
+		} else {
+			blocks := <-_b.blocksCh_
+			n++
+			for _, block := range blocks {
+				_b.prevMap_[block.HashPrev.String()] = block
 			}
 
-			delete(_b.file2spentMap_, fileNO)
-			n++
-
-			log.Printf("[OK]fileNO:%v file2spentMap_:%v blockNum_:%v blockNum:%v unspentMap_:%v balanceMap_:%v\n",
-				fileNO, len(_b.file2spentMap_), _b.blockNum_, spent.blockNum, len(_b.unspentMap_), len(_b.balanceMap_))
-
-			//if uint32(n)%_b.snapshot_ == 0 {
-			//	_b.saveMap(fileNO)
-			//}
-		} else {
-			f2s := <-_b.file2spentCh_
-			_b.file2spentMap_[f2s.file] = f2s
-			log.Println("received file", f2s.file, len(_b.file2spentMap_), len(f2s.unspentMap))
+			log.Println("[RECEIVED]", n, len(blocks), len(_b.prevMap_))
 		}
 	}
 

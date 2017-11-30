@@ -142,7 +142,7 @@ func ParseBlockTransactionFromFile(blockFile *BlockFile) (*Transaction, error) {
 	txOutputLength := blockFile.ReadVarint()
 	for i := uint64(0); i < txOutputLength; i++ {
 		output := TxOutput{}
-		output.Value = int64(blockFile.ReadUint64())
+		output.Value = blockFile.ReadUint64()
 		scriptLength := blockFile.ReadVarint()
 		output.Script = blockFile.ReadBytes(scriptLength)
 		tx.Vout = append(tx.Vout, output)

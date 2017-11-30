@@ -55,7 +55,7 @@ func (in TxInput) ScriptWitnessBinary() []byte {
 }
 
 type TxOutput struct {
-	Value  int64
+	Value  uint64
 	Script Script
 }
 
