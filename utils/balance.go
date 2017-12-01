@@ -33,10 +33,8 @@ func makeTxID(_s string) tTxID {
 	return *txID
 }
 
-type tAddr [58]byte
-
 type tOutput struct {
-	addr tAddr  // index
+	addr string // index
 	val  uint64 // val
 }
 
@@ -47,7 +45,7 @@ type tOutputMap map[uint16]tOutput
 type tUnspentMap map[tTxID]tOutputMap
 
 // add -> balance
-type tBalanceMap map[tAddr]uint64
+type tBalanceMap map[string]uint64
 
 type tPrev2Spent struct {
 	final bool
@@ -109,11 +107,10 @@ func (_b *BalanceExporter) loadUnspent(_path string, _wg *sync.WaitGroup) {
 			for _, output := range outputs {
 				if tokens := strings.Split(output, " "); len(tokens) == 3 {
 					if index, err := strconv.Atoi(tokens[0]); err == nil {
-						addr := new(tAddr)
-						copy(addr[:], tokens[1])
+						addr := tokens[1]
 						if val, err := strconv.ParseUint(tokens[2], 10, 0); err == nil {
 							out[uint16(index)] = tOutput{
-								*addr,
+								addr,
 								val,
 							}
 						}
@@ -153,10 +150,9 @@ func (_b *BalanceExporter) loadBalance(_path string, _wg *sync.WaitGroup) {
 		l := scanner.Text()
 
 		if tokens := strings.Split(l, " "); len(tokens) == 2 {
-			addr := new(tAddr)
-			copy(addr[:], tokens[0])
+			addr := tokens[0]
 			if balance, err := strconv.ParseUint(tokens[1], 10, 0); err == nil {
-				_b.balanceMap_[*addr] = balance
+				_b.balanceMap_[addr] = balance
 			}
 		}
 	}
@@ -459,11 +455,10 @@ func (_b *BalanceExporter) processFile(_wg *sync.WaitGroup) {
 				for i, o := range t.Vout {
 					if a := btc.NewAddrFromPkScript(o.Script, false); a != nil && o.Value > 0 {
 						index := uint16(i)
-						addr := new(tAddr)
-						copy(addr[:], a.String())
+						addr := a.String()
 						val := uint64(o.Value)
-						balanceMap[*addr] = balanceMap[*addr] + val
-						unspent[index] = tOutput{*addr, val}
+						balanceMap[addr] = balanceMap[addr] + val
+						unspent[index] = tOutput{addr, val}
 					}
 				}
 				unspentMap[txID] = unspent
